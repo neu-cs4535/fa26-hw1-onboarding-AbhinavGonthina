@@ -4,6 +4,7 @@ import { useClassProfiles } from "@/hooks/useClassProfiles";
 import { useGradebookWhatIfFeatureEnabled } from "@/hooks/useCourseFeatures";
 import {
   useGradebookColumn,
+  useGradebookColumnGroups,
   useGradebookColumns,
   useGradebookColumnStudent,
   useGradebookController,
@@ -16,6 +17,7 @@ import {
   useGradebookWhatIf,
   useWhatIfGrade
 } from "@/hooks/useGradebookWhatIf";
+import { buildGroupedColumns } from "@/lib/gradebookColumnGroups";
 import { GradebookColumn } from "@/utils/supabase/DatabaseTypes";
 import {
   Accordion,
@@ -528,6 +530,7 @@ function CollapsedGroupColumn({
 
 export function WhatIf({ private_profile_id, whatIfEnabled }: { private_profile_id: string; whatIfEnabled: boolean }) {
   const columns = useGradebookColumns();
+  const columnGroups = useGradebookColumnGroups();
 
   // State for collapsible groups - use base group name as key for stability
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
@@ -539,64 +542,9 @@ export function WhatIf({ private_profile_id, whatIfEnabled }: { private_profile_
     return cols;
   }, [columns]);
 
-  // Group gradebook columns by slug prefix, with special handling for assignment sub-groups
-  const groupedColumns = useMemo(() => {
-    const groups: Record<string, { groupName: string; columns: GradebookColumn[] }> = {};
-
-    let currentGroupKey = "";
-    let currentGroupIndex = 0;
-    let lastSortOrder = -1;
-
-    sortedColumns.forEach((col) => {
-      const slugParts = col.slug.split("-");
-      let baseGroupName: string;
-
-      // Special handling for assignment columns
-      if (slugParts[0] === "assignment" && slugParts.length >= 3) {
-        // For assignment-assignment-*, assignment-lab-*, etc., use "assignment-{type}" as the base group
-        baseGroupName = `${slugParts[0]}-${slugParts[1]}`;
-      } else {
-        // For all other columns, use the first part as the base group
-        baseGroupName = slugParts[0] || "other";
-      }
-
-      // Check if this column is contiguous with the previous one
-      const currentSortOrder = col.sort_order ?? 0;
-      const isContiguous = lastSortOrder === -1 || currentSortOrder === lastSortOrder + 1;
-
-      // If not contiguous or different prefix, start a new group
-      if (!isContiguous || baseGroupName !== currentGroupKey) {
-        currentGroupKey = baseGroupName;
-        currentGroupIndex++;
-      }
-
-      const groupKey = `${baseGroupName}-${currentGroupIndex}`;
-
-      if (!groups[groupKey]) {
-        // Format group name for display
-        let displayName: string;
-        if (baseGroupName === "other") {
-          displayName = "Other";
-        } else if (baseGroupName.startsWith("assignment-")) {
-          // For assignment sub-groups, capitalize and format nicely
-          const subType = baseGroupName.split("-")[1];
-          displayName = `${subType.charAt(0).toUpperCase() + subType.slice(1)}`;
-        } else {
-          displayName = baseGroupName.charAt(0).toUpperCase() + baseGroupName.slice(1);
-        }
-
-        groups[groupKey] = {
-          groupName: displayName,
-          columns: []
-        };
-      }
-
-      groups[groupKey].columns.push(col);
-      lastSortOrder = currentSortOrder;
-    });
-
-    return groups;
-  }, [sortedColumns]);
+  // Shape columns into their stored groups. Membership comes from
+  // gradebook_columns.group_id; nothing here reads a slug.
+  const groupedColumns = useMemo(() => buildGroupedColumns(sortedColumns, columnGroups), [sortedColumns, columnGroups]);
 
   // Initialize all groups as collapsed by default, but preserve existing collapsed state
   useEffect(() => {
