@@ -13484,6 +13484,10 @@ export type Database = {
         Args: { p_group_id: number; p_offset: number };
         Returns: undefined;
       };
+      gradebook_column_groups_resequence: {
+        Args: { p_gradebook_id: number };
+        Returns: undefined;
+      };
       gradebook_column_move_left: {
         Args: { p_column_id: number };
         Returns: {
