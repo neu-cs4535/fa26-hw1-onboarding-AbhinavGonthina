@@ -5259,6 +5259,17 @@ final;`,
       throw new Error(`Could not assign column groups for class ${class_id}: ${error.message}`);
     }
 
+    // The fixtures renumber column sort_order after creating the columns, so any
+    // group order worked out while they were being inserted is now stale. A
+    // group is displayed at the position of its earliest column, so resequence
+    // to keep the stored order agreeing with what the gradebook draws.
+    const { error: resequenceError } = await supabase.rpc("gradebook_column_groups_resequence", {
+      p_gradebook_id: gradebook.id
+    });
+    if (resequenceError) {
+      throw new Error(`Could not resequence column groups for class ${class_id}: ${resequenceError.message}`);
+    }
+
     const { data: groups } = await supabase
       .from("gradebook_column_groups")
       .select("name, sort_order")
