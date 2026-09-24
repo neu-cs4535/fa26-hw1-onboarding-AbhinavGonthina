@@ -448,7 +448,7 @@ end;
 $function$;
 
 comment on function public.backfill_gradebook_column_groups(bigint) is
-  'Classifies ungrouped gradebook_columns into gradebook_column_groups by slug family, ignoring sort_order holes and titling each group from the common prefix of its members'' names. Idempotent: only touches columns whose group_id is NULL, and never renames or moves a group that already exists. Returns the number of columns assigned.';
+  'Classifies ungrouped gradebook_columns into gradebook_column_groups. A group is a run of consecutive columns sharing a slug family, broken by a family change or by a tie where two columns claim the same position, and never by a gap left where a column was deleted. Each group is titled from the common prefix of its members'' names. Idempotent: only touches columns whose group_id is NULL, and never renames or moves a group that already exists. Returns the number of columns assigned.';
 
 grant execute on function public.backfill_gradebook_column_groups(bigint) to authenticated;
 grant execute on function public.backfill_gradebook_column_groups(bigint) to service_role;
