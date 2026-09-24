@@ -233,7 +233,7 @@ with cols as (
     gc.gradebook_id,
     gc.class_id,
     gc.name,
-    gc.sort_order,
+    coalesce(gc.sort_order, 0) as sort_order,
     gc.group_id,
     case
       when (string_to_array(gc.slug, '-'))[1] = 'assignment'
@@ -244,40 +244,84 @@ with cols as (
   from public.gradebook_columns gc
   where p_gradebook_id is null or gc.gradebook_id = p_gradebook_id
 ),
--- A family is every column that shares a key, whether or not it already has a
--- group. Counting only the ungrouped ones would mean a column arriving after
--- its family already has a group looks like a family of one and never joins:
--- insert exam-1 and exam-2, they form "Exam", then exam-3 arrives alone and is
--- left out. Sizing and titling over the whole family also keeps the title
--- stable, so a late arrival resolves to the group that already exists rather
--- than minting a near-duplicate.
+-- A group is a RUN: consecutive columns, in display order, sharing a family.
+--
+-- The old heuristic started a new group whenever `sort_order != previous + 1`,
+-- which conflates two different things. One of them is a real boundary and the
+-- other is not:
+--
+--   a GAP  -- nothing occupies the position in between, because a column was
+--            deleted and nothing renumbers on delete. quiz-3 was deleted, so
+--            quiz-1,2,4,5 sit at 11,12,14,15 and the old rule cut the family in
+--            half, producing two groups both titled "Quiz" that shared one
+--            collapse toggle. A hole where something used to be is not a
+--            boundary, and this is the case the backfill corrects.
+--
+--   a TIE  -- two columns claim the same position, which happens when a column
+--            has no sort_order at all and is treated as position zero. Two
+--            columns cannot be an ordered block if neither is before the other,
+--            so this is a real boundary and the run genuinely ends here.
+--
+-- Breaking on a tie and a family change, but never on a gap, is the rule.
+ordered as (
+  select
+    c.*,
+    lag(c.group_key) over (partition by c.gradebook_id order by c.sort_order, c.id) as prev_key,
+    lag(c.sort_order) over (partition by c.gradebook_id order by c.sort_order, c.id) as prev_sort
+  from cols c
+),
+marked as (
+  select
+    o.*,
+    case
+      when o.prev_key is distinct from o.group_key then 1
+      when o.sort_order = o.prev_sort then 1
+      else 0
+    end as is_break
+  from ordered o
+),
+runs as (
+  select
+    m.*,
+    sum(m.is_break) over (
+      partition by m.gradebook_id
+      order by m.sort_order, m.id
+      rows between unbounded preceding and current row
+    ) as run_id
+  from marked m
+),
+-- Sizing and titling look at the whole run, including columns that already have
+-- a group. Counting only the ungrouped ones would mean a column arriving after
+-- its run already has a group looks like a run of one and never joins it.
 family as (
   select
-    c.gradebook_id,
-    c.class_id,
-    c.group_key,
+    r.gradebook_id,
+    r.class_id,
+    r.group_key,
+    r.run_id,
     count(*) as family_size,
-    min(c.name) as name_lo,
-    max(c.name) as name_hi,
-    min(c.sort_order) as first_sort
-  from cols c
-  group by c.gradebook_id, c.class_id, c.group_key
+    min(r.name) as name_lo,
+    max(r.name) as name_hi,
+    min(r.sort_order) as first_sort
+  from runs r
+  group by r.gradebook_id, r.class_id, r.group_key, r.run_id
+),
+groupable as (
+  select f.* from family f where f.family_size >= 2
 ),
 -- Only ungrouped columns are assigned; the rest are here for sizing only.
 eligible as (
-  select c.*
-  from cols c
-  join family f
-    on f.gradebook_id = c.gradebook_id and f.group_key = c.group_key
-  where c.group_id is null
-    and f.family_size >= 2
+  select r.*
+  from runs r
+  join groupable f
+    on f.gradebook_id = r.gradebook_id and f.run_id = r.run_id
+  where r.group_id is null
 ),
 agg as (
-  select f.gradebook_id, f.class_id, f.group_key, f.name_lo, f.name_hi, f.first_sort
-  from family f
-  where f.family_size >= 2
-    and exists (select 1 from eligible e
-                where e.gradebook_id = f.gradebook_id and e.group_key = f.group_key)
+  select f.gradebook_id, f.class_id, f.group_key, f.run_id, f.name_lo, f.name_hi, f.first_sort
+  from groupable f
+  where exists (select 1 from eligible e
+                where e.gradebook_id = f.gradebook_id and e.run_id = f.run_id)
 ),
 common as (
   select
@@ -301,6 +345,7 @@ titled as (
     c.gradebook_id,
     c.class_id,
     c.group_key,
+    c.run_id,
     c.first_sort,
     coalesce(
       nullif(btrim(regexp_replace(c.name_prefix, '[^A-Za-z]+$', '')), ''),
@@ -315,7 +360,7 @@ deduped as (
     t.*,
     row_number() over (
       partition by t.gradebook_id, lower(t.title)
-      order by t.first_sort, t.group_key
+      order by t.first_sort, t.run_id
     ) as title_rank
   from titled t
 ),
@@ -324,6 +369,7 @@ titles as (
     d.gradebook_id,
     d.class_id,
     d.group_key,
+    d.run_id,
     d.first_sort,
     case when d.title_rank = 1 then d.title
          else d.title || ' (' || d.title_rank || ')' end as title
@@ -342,6 +388,7 @@ plan as (
     t.gradebook_id,
     t.class_id,
     t.group_key,
+    t.run_id,
     t.title,
     -- A title of only punctuation would slugify to '', which the slug_format
     -- check rejects. Fall back to the family key, unique per gradebook.
@@ -360,7 +407,7 @@ plan as (
     ) as slug,
     (
       coalesce(h.max_sort, -1)
-      + dense_rank() over (partition by t.gradebook_id order by t.first_sort, t.group_key)
+      + dense_rank() over (partition by t.gradebook_id order by t.first_sort, t.run_id)
     )::integer as sort_order
   from titles t
   left join high_water h on h.gradebook_id = t.gradebook_id
@@ -378,7 +425,7 @@ inserted as (
 resolved as (
   select
     p.gradebook_id,
-    p.group_key,
+    p.run_id,
     coalesce(i.id, g.id) as group_id
   from plan p
   left join inserted i
@@ -388,10 +435,10 @@ resolved as (
 )
 update public.gradebook_columns gc
 set group_id = r.group_id
-from cols c
+from runs c
 join resolved r
   on r.gradebook_id = c.gradebook_id
- and r.group_key = c.group_key
+ and r.run_id = c.run_id
 where gc.id = c.id
   and r.group_id is not null;
 
