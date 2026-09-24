@@ -10,6 +10,7 @@ import {
   Assignment,
   GradebookColumn,
   GradebookColumnDependencies,
+  GradebookColumnGroup,
   GradebookColumnStudent
 } from "@/utils/supabase/DatabaseTypes";
 import { Box, Button, Heading, HStack, Link, Spinner, Text, VStack } from "@chakra-ui/react";
@@ -133,6 +134,26 @@ export function useGradebookColumns() {
   }, [gradebookController]);
 
   return columns;
+}
+
+/**
+ * Column groups for this gradebook, ordered by `sort_order`.
+ *
+ * RLS decides what a student sees, so this needs no student-view filter of its
+ * own: the read policy on `gradebook_column_groups` already hides a group whose
+ * every column is instructor-only and unreleased.
+ */
+export function useGradebookColumnGroups() {
+  const gradebookController = useGradebookController();
+  const [groups, setGroups] = useState<GradebookColumnGroup[]>(gradebookController.gradebook_column_groups.rows);
+
+  useEffect(() => {
+    return gradebookController.gradebook_column_groups.list((data) => {
+      setGroups(data);
+    }).unsubscribe;
+  }, [gradebookController]);
+
+  return groups;
 }
 
 /**
@@ -1401,10 +1422,17 @@ export class GradebookController {
   /** Single-row controller for this gradebook (hydrates expression_prefix, etc.). */
   readonly gradebook_row: TableController<"gradebooks">;
   readonly gradebook_columns: TableController<"gradebook_columns">;
+  /**
+   * Column groups, the stored replacement for the slug-prefix grouping that
+   * `groupedColumns` used to derive at render time. No realtime subscription:
+   * groups are written by migration/backfill, not edited in this view, so a
+   * broadcast channel would be plumbing with nothing to carry.
+   */
+  readonly gradebook_column_groups: TableController<"gradebook_column_groups">;
   readonly table: GradebookCellController;
   readonly assignments_table: TableController<"assignments">;
 
-  readonly readyPromise: Promise<[void, void, void, void]>;
+  readonly readyPromise: Promise<[void, void, void, void, void]>;
 
   public studentSubmissions: Map<string, Database["public"]["Views"]["active_submissions_for_class"]["Row"][]> =
     new Map();
@@ -1467,11 +1495,18 @@ export class GradebookController {
       classRealTimeController
     });
 
+    this.gradebook_column_groups = new TableController({
+      client,
+      table: "gradebook_column_groups",
+      query: client.from("gradebook_column_groups").select("*").eq("gradebook_id", gradebook_id)
+    });
+
     this.readyPromise = Promise.all([
       this.gradebook_row.readyPromise,
       this.gradebook_columns.readyPromise,
       this.table.readyPromise,
-      this.assignments_table.readyPromise
+      this.assignments_table.readyPromise,
+      this.gradebook_column_groups.readyPromise
     ]);
 
     // Set up refetch status tracking
