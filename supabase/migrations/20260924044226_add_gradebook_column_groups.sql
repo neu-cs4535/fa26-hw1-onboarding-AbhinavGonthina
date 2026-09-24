@@ -234,6 +234,7 @@ with cols as (
     gc.class_id,
     gc.name,
     gc.sort_order,
+    gc.group_id,
     case
       when (string_to_array(gc.slug, '-'))[1] = 'assignment'
            and array_length(string_to_array(gc.slug, '-'), 1) >= 3
@@ -241,28 +242,42 @@ with cols as (
       else 'pre:' || (string_to_array(gc.slug, '-'))[1]
     end as group_key
   from public.gradebook_columns gc
-  where gc.group_id is null
-    and (p_gradebook_id is null or gc.gradebook_id = p_gradebook_id)
+  where p_gradebook_id is null or gc.gradebook_id = p_gradebook_id
 ),
-sized as (
+-- A family is every column that shares a key, whether or not it already has a
+-- group. Counting only the ungrouped ones would mean a column arriving after
+-- its family already has a group looks like a family of one and never joins:
+-- insert exam-1 and exam-2, they form "Exam", then exam-3 arrives alone and is
+-- left out. Sizing and titling over the whole family also keeps the title
+-- stable, so a late arrival resolves to the group that already exists rather
+-- than minting a near-duplicate.
+family as (
   select
-    c.*,
-    count(*) over (partition by c.gradebook_id, c.group_key) as family_size
+    c.gradebook_id,
+    c.class_id,
+    c.group_key,
+    count(*) as family_size,
+    min(c.name) as name_lo,
+    max(c.name) as name_hi,
+    min(c.sort_order) as first_sort
   from cols c
+  group by c.gradebook_id, c.class_id, c.group_key
 ),
+-- Only ungrouped columns are assigned; the rest are here for sizing only.
 eligible as (
-  select * from sized where family_size >= 2
+  select c.*
+  from cols c
+  join family f
+    on f.gradebook_id = c.gradebook_id and f.group_key = c.group_key
+  where c.group_id is null
+    and f.family_size >= 2
 ),
 agg as (
-  select
-    gradebook_id,
-    class_id,
-    group_key,
-    min(name) as name_lo,
-    max(name) as name_hi,
-    min(sort_order) as first_sort
-  from eligible
-  group by gradebook_id, class_id, group_key
+  select f.gradebook_id, f.class_id, f.group_key, f.name_lo, f.name_hi, f.first_sort
+  from family f
+  where f.family_size >= 2
+    and exists (select 1 from eligible e
+                where e.gradebook_id = f.gradebook_id and e.group_key = f.group_key)
 ),
 common as (
   select
