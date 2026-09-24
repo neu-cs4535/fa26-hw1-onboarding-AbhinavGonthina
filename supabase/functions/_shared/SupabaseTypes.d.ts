@@ -3859,6 +3859,7 @@ export type Database = {
       gradebooks: {
         Row: {
           class_id: number;
+          column_groups_curated: boolean;
           created_at: string;
           description: string | null;
           expression_prefix: string | null;
@@ -3868,6 +3869,7 @@ export type Database = {
         };
         Insert: {
           class_id: number;
+          column_groups_curated?: boolean;
           created_at?: string;
           description?: string | null;
           expression_prefix?: string | null;
@@ -3877,6 +3879,7 @@ export type Database = {
         };
         Update: {
           class_id?: number;
+          column_groups_curated?: boolean;
           created_at?: string;
           description?: string | null;
           expression_prefix?: string | null;

@@ -16,6 +16,28 @@
 -- shape and needed no change.
 
 -- ---------------------------------------------------------------------------
+-- Has an instructor curated this gradebook's groups?
+--
+-- The backfill cannot tell a column nobody has classified yet from one an
+-- instructor deliberately pulled out of a group, because both are a NULL
+-- group_id. Without something recording the difference, the insert trigger in
+-- 20260924100000 re-groups a column that was removed on purpose the next time
+-- any column is added, which is the same complaint the old slug heuristic
+-- earned: the system deciding grouping over the instructor's head.
+--
+-- Every function below that an instructor can invoke sets this flag. The
+-- backfill does not, so the one-time classification and the seeding path leave
+-- it false and a fresh gradebook still gets grouped automatically. Once an
+-- instructor has touched the groups, the trigger stops classifying for them.
+-- ---------------------------------------------------------------------------
+
+alter table public.gradebooks
+  add column if not exists column_groups_curated boolean not null default false;
+
+comment on column public.gradebooks.column_groups_curated is
+  'True once an instructor has created, renamed, deleted, reordered or reassigned a column group here. While false, newly inserted columns are classified automatically; once true, the automatic classification stays out of the way.';
+
+-- ---------------------------------------------------------------------------
 -- Helper: resolve a group to its gradebook and class, and require instructor.
 -- ---------------------------------------------------------------------------
 
@@ -155,6 +177,10 @@ begin
   values (v_class_id, p_gradebook_id, v_name, v_slug, v_sort)
   returning id into v_id;
 
+  update public.gradebooks
+  set column_groups_curated = true
+  where id = p_gradebook_id and column_groups_curated = false;
+
   return v_id;
 end;
 $function$;
@@ -198,6 +224,10 @@ begin
   update public.gradebook_column_groups
   set name = v_name
   where id = p_group_id;
+
+  update public.gradebooks
+  set column_groups_curated = true
+  where id = v_gradebook_id and column_groups_curated = false;
 end;
 $function$;
 
@@ -224,6 +254,10 @@ begin
 
   -- Close the gap the delete left.
   perform public.gradebook_column_groups_resequence(v_gradebook_id);
+
+  update public.gradebooks
+  set column_groups_curated = true
+  where id = v_gradebook_id and column_groups_curated = false;
 end;
 $function$;
 
@@ -281,6 +315,10 @@ begin
 
   -- Membership decides display position, so the group order has to follow.
   perform public.gradebook_column_groups_resequence(v_gradebook_id);
+
+  update public.gradebooks
+  set column_groups_curated = true
+  where id = v_gradebook_id and column_groups_curated = false;
 end;
 $function$;
 
@@ -390,6 +428,10 @@ begin
 
   -- Keep the groups' own sort_order agreeing with the order now on screen.
   perform public.gradebook_column_groups_resequence(v_gradebook_id);
+
+  update public.gradebooks
+  set column_groups_curated = true
+  where id = v_gradebook_id and column_groups_curated = false;
 end;
 $function$;
 

@@ -26,13 +26,14 @@
 -- reorder, delete or reassign. The grouping is stored data with a default, not
 -- something re-derived every time the page is drawn.
 --
--- KNOWN LIMITATION, stated rather than hidden. The backfill only considers
--- columns whose group_id is NULL, which it cannot distinguish between "never
--- classified" and "an instructor deliberately took this column out of a
--- group". So adding a new column to a gradebook where someone has deliberately
--- ungrouped a column will put that column back into a group. The fix is a
--- per-gradebook flag recording that an instructor has curated the groups, set
--- by the CRUD functions and checked here; I have not built it.
+-- WHY IT CHECKS A FLAG. The backfill only considers columns whose group_id is
+-- NULL, and it cannot tell "never classified" from "an instructor deliberately
+-- took this column out of a group". Left unchecked, adding any column to a
+-- gradebook would put a deliberately ungrouped column back, which is the same
+-- complaint the old slug heuristic earned. gradebooks.column_groups_curated is
+-- set by every CRUD function an instructor can invoke, and this trigger skips
+-- any gradebook where it is true. A gradebook nobody has curated still gets
+-- classified automatically, which is what the existing specs rely on.
 
 create or replace function public.gradebook_columns_autogroup()
 returns trigger
@@ -44,7 +45,15 @@ declare
   v_gradebook_id bigint;
 begin
   for v_gradebook_id in
-    select distinct nt.gradebook_id from new_table nt where nt.gradebook_id is not null
+    select distinct nt.gradebook_id
+    from new_table nt
+    join public.gradebooks g on g.id = nt.gradebook_id
+    -- Stay out of the way once an instructor has curated the groups here. The
+    -- backfill only looks at columns whose group_id is NULL and cannot tell
+    -- "never classified" from "deliberately ungrouped", so without this check
+    -- adding any column would put a column an instructor removed on purpose
+    -- straight back into its old group.
+    where g.column_groups_curated = false
   loop
     perform public.backfill_gradebook_column_groups(v_gradebook_id);
     perform public.gradebook_column_groups_resequence(v_gradebook_id);
