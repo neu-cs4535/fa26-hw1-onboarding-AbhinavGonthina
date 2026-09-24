@@ -5228,6 +5228,44 @@ final;`,
       .order("sort_order", { ascending: true });
     console.log(`   ✓ Column-group fixtures in place. Layout (${layout?.length ?? 0} columns):`);
     console.log(`     ${(layout ?? []).map((c) => `${c.sort_order}:${c.slug}`).join(" ")}`);
+
+    // Column groups are stored rows now, and migrations replay before any seed runs, so the
+    // migration's own backfill pass saw an empty database. Classify what we just created with the
+    // same function the migration used, rather than duplicating the policy here. Instructors get
+    // this as an "auto-group my columns" action; a seeded class is the same situation.
+    await this.assignColumnGroups(class_id);
+  }
+
+  /**
+   * Put the columns of `class_id` into gradebook_column_groups via the backfill RPC.
+   *
+   * Idempotent, and only ever touches columns with no group, so re-seeding on top of an existing
+   * class cannot reshuffle groups that are already there.
+   */
+  private async assignColumnGroups(class_id: number) {
+    const { data: gradebook, error: gradebookError } = await supabase
+      .from("gradebooks")
+      .select("id")
+      .eq("class_id", class_id)
+      .single();
+    if (gradebookError || !gradebook) {
+      throw new Error(`Could not find the gradebook for class ${class_id}: ${gradebookError?.message}`);
+    }
+
+    const { data: assigned, error } = await supabase.rpc("backfill_gradebook_column_groups", {
+      p_gradebook_id: gradebook.id
+    });
+    if (error) {
+      throw new Error(`Could not assign column groups for class ${class_id}: ${error.message}`);
+    }
+
+    const { data: groups } = await supabase
+      .from("gradebook_column_groups")
+      .select("name, sort_order")
+      .eq("gradebook_id", gradebook.id)
+      .order("sort_order", { ascending: true });
+    console.log(`   ✓ Grouped ${assigned ?? 0} columns into ${groups?.length ?? 0} column groups:`);
+    console.log(`     ${(groups ?? []).map((g) => g.name).join(" | ")}`);
   }
 
   /**
